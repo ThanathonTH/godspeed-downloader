@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Download,
@@ -22,7 +23,6 @@ import SuccessModal from "./components/SuccessModal";
 import SettingsView from "./components/SettingsView";
 
 const MAX_LOGS = 200;
-const APP_VERSION = "2.1.0";
 
 type ViewType = "home" | "settings";
 
@@ -55,7 +55,15 @@ function App() {
   const [downloadedFilename, setDownloadedFilename] = useState("");
   const [downloadedFilePath, setDownloadedFilePath] = useState("");
 
+  // App version (fetched from Tauri)
+  const [appVersion, setAppVersion] = useState("...");
+
   const isMountedRef = useRef(true);
+
+  // Fetch app version on mount
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => setAppVersion("?.?.?"));
+  }, []);
 
   // When terminal is disabled, also hide it
   useEffect(() => {
@@ -406,13 +414,14 @@ function App() {
                   onToggleTerminalEnabled={setIsTerminalEnabled}
                   autoClearUrl={autoClearUrl}
                   onToggleAutoClear={setAutoClearUrl}
+                  appVersion={appVersion}
                 />
               </div>
             )}
           </div>
 
           {/* Status Bar */}
-          <StatusBar isDownloading={isDownloading} />
+          <StatusBar isDownloading={isDownloading} appVersion={appVersion} />
 
           {/* Terminal Drawer - only render if enabled */}
           {isTerminalEnabled && (
@@ -441,9 +450,10 @@ function App() {
  */
 interface StatusBarProps {
   isDownloading: boolean;
+  appVersion: string;
 }
 
-function StatusBar({ isDownloading }: StatusBarProps) {
+function StatusBar({ isDownloading, appVersion }: StatusBarProps) {
   return (
     <div className="h-8 bg-black/60 border-t border-white/5 flex items-center justify-between px-4 text-[10px] font-mono tracking-wider shrink-0">
       {/* Left side - Engine status */}
@@ -469,7 +479,7 @@ function StatusBar({ isDownloading }: StatusBarProps) {
       {/* Right side - Version */}
       <div className="flex items-center gap-2 text-white/30">
         <span>GODSPEED</span>
-        <span className="text-[#00ff88]/60">v{APP_VERSION}</span>
+        <span className="text-[#00ff88]/60">v{appVersion}</span>
       </div>
     </div>
   );

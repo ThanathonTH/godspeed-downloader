@@ -15,8 +15,7 @@ import {
     Shield,
 } from "lucide-react";
 
-// App version - must match the version in tauri.conf.json
-const APP_VERSION = "2.1.1";
+// Note: APP_VERSION is now passed as a prop from App.tsx
 
 // Placeholder URL for engine update - replace with actual GitHub release asset URL
 const ENGINE_UPDATE_URL = "https://github.com/ThanathonTH/godspeed-downloader/releases/download/v2.1.0/engine_v12.zip";
@@ -37,6 +36,7 @@ interface SettingsViewProps {
     onToggleTerminalEnabled: (value: boolean) => void;
     autoClearUrl: boolean;
     onToggleAutoClear: (value: boolean) => void;
+    appVersion: string;
 }
 
 /**
@@ -86,6 +86,7 @@ function SettingsView({
     onToggleTerminalEnabled,
     autoClearUrl,
     onToggleAutoClear,
+    appVersion,
 }: SettingsViewProps) {
     // App update state
     const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus>("idle");
@@ -115,7 +116,7 @@ function SettingsView({
 
         try {
             const result = await invoke<UpdateInfo>("check_app_update", {
-                currentVersion: APP_VERSION,
+                currentVersion: appVersion,
             });
 
             setUpdateInfo(result);
@@ -213,6 +214,7 @@ function SettingsView({
                         installError={installError}
                         onRetryCheck={checkForUpdates}
                         onInstall={handleInstallUpdate}
+                        appVersion={appVersion}
                     />
                 </div>
 
@@ -272,7 +274,7 @@ function SettingsView({
             {/* Footer */}
             <footer className="mt-auto pt-8">
                 <p className="text-white/20 text-xs">
-                    GODSPEED DOWNLOADER v{APP_VERSION}
+                    GODSPEED DOWNLOADER v{appVersion}
                 </p>
             </footer>
         </div>
@@ -291,6 +293,7 @@ interface AppUpdateCardProps {
     installError: string;
     onRetryCheck: () => void;
     onInstall: () => void;
+    appVersion: string;
 }
 
 function AppUpdateCard({
@@ -301,6 +304,7 @@ function AppUpdateCard({
     installError,
     onRetryCheck,
     onInstall,
+    appVersion,
 }: AppUpdateCardProps) {
     // Determine current display state
     const isChecking = status === "checking";
@@ -367,10 +371,10 @@ function AppUpdateCard({
                             {isDownloading && "Please wait while the installer downloads..."}
                             {isInstalling && "The installer will start shortly. This app will close."}
                             {isUpToDate && (
-                                <>Running version <span className="font-mono text-[#00ff88]">v{APP_VERSION}</span> — the latest release</>
+                                <>Running version <span className="font-mono text-[#00ff88]">v{appVersion}</span> — the latest release</>
                             )}
                             {hasUpdate && (
-                                <>Current: <span className="font-mono">v{APP_VERSION}</span> → New: <span className="font-mono text-[#00ff88]">v{updateInfo?.latest_version}</span></>
+                                <>Current: <span className="font-mono">v{appVersion}</span> → New: <span className="font-mono text-[#00ff88]">v{updateInfo?.latest_version}</span></>
                             )}
                             {hasCheckError && updateError}
                             {hasInstallError && installError}
