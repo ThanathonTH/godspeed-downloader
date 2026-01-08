@@ -106,8 +106,12 @@ async fn install_app_update(app: AppHandle, url: String) -> Result<String, Strin
         let _ = fs::remove_file(&msi_path);
     }
     
-    // Step 2: Download the MSI file
-    let client = reqwest::Client::new();
+    // Step 2: Download the MSI file (10 minute timeout for slow connections)
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    
     let response = client
         .get(&url)
         .header("User-Agent", "godspeed-app")
@@ -281,8 +285,15 @@ fn install_engine_update(url: String) -> Result<String, String> {
     
     let zip_path = temp_dir.join("engine.zip");
     
-    // Download using blocking reqwest
-    let response = reqwest::blocking::get(&url)
+    // Download using blocking reqwest (10 minute timeout for slow connections)
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    
+    let response = client
+        .get(&url)
+        .send()
         .map_err(|e| format!("Failed to download engine update: {}", e))?;
     
     if !response.status().is_success() {
