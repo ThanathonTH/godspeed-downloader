@@ -1,0 +1,29 @@
+# Cargo configuration for handling slow/unstable network connections
+# This helps with crates.io timeout issues (especially from certain cache servers)
+
+[http]
+# Increase timeout to 120 seconds (default is 30)
+timeout = 120
+
+# Skip SSL certificate revocation checks (can timeout on slow connections)
+check-revoke = false
+
+# Enable low-speed limit - abort if speed drops below 10 bytes/sec for 60 seconds
+low-speed-limit = 10
+
+# Increase number of retries for HTTP requests
+multiplexing = false
+
+[net]
+# Retry up to 10 times on network failures (default is 3)
+retry = 10
+
+# Use git CLI instead of libgit2 (more reliable on some networks)
+git-fetch-with-cli = true
+
+# Offline mode - uncomment to use only cached crates
+# offline = true
+
+[registries.crates-io]
+# Use sparse protocol for faster index updates (default in Rust 1.70+)
+protocol = "sparse"
