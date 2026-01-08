@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "godspeed-downloader",
-  "version": "0.1.0",
-  "identifier": "com.godspeed.app",
+  "productName": "Godspeed Downloader",
+  "version": "2.1.1",
+  "identifier": "com.godspeed.downloader",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",

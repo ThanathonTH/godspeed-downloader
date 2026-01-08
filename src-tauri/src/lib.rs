@@ -4,10 +4,155 @@ use std::path::PathBuf;
 use std::process::Command;
 use tauri::AppHandle;
 use tauri::Emitter;
-use tauri::Manager;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use zip::ZipArchive;
+
+// ============================================================================
+// AUTO-UPDATE SYSTEM
+// ============================================================================
+
+/// Response structure for update check results
+#[derive(serde::Serialize)]
+struct UpdateInfo {
+    update_available: bool,
+    latest_version: String,
+    download_url: String,
+}
+
+/// GitHub API response structures
+#[derive(serde::Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+/// Check for app updates via GitHub Releases API.
+/// 
+/// Fetches the latest release from GitHub and compares with the current version.
+/// Returns update availability and download URL for the MSI installer.
+#[tauri::command]
+async fn check_app_update(current_version: String) -> Result<UpdateInfo, String> {
+    let api_url = "https://api.github.com/repos/ThanathonTH/godspeed-downloader/releases/latest";
+    
+    // Create HTTP client with required User-Agent header
+    let client = reqwest::Client::new();
+    let response = client
+        .get(api_url)
+        .header("User-Agent", "godspeed-app")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch update info: {}", e))?;
+    
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub API error: {} - {}",
+            response.status(),
+            response.status().canonical_reason().unwrap_or("Unknown error")
+        ));
+    }
+    
+    let release: GitHubRelease = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse release info: {}", e))?;
+    
+    // Clean version strings for comparison (remove 'v' prefix if present)
+    let latest_clean = release.tag_name.trim_start_matches('v').to_string();
+    let current_clean = current_version.trim_start_matches('v').to_string();
+    
+    // Find the MSI asset URL
+    let download_url = release
+        .assets
+        .iter()
+        .find(|asset| asset.name.ends_with(".msi"))
+        .map(|asset| asset.browser_download_url.clone())
+        .unwrap_or_default();
+    
+    // Compare versions (simple string comparison works for semver)
+    let update_available = latest_clean != current_clean && !latest_clean.is_empty();
+    
+    Ok(UpdateInfo {
+        update_available,
+        latest_version: latest_clean,
+        download_url,
+    })
+}
+
+/// Download and install an app update from the given MSI URL.
+/// 
+/// Downloads the MSI installer to a temp directory, launches it with msiexec,
+/// and then exits the current application to allow the installer to complete.
+#[tauri::command]
+async fn install_app_update(app: AppHandle, url: String) -> Result<String, String> {
+    if url.is_empty() {
+        return Err("No download URL provided.".to_string());
+    }
+    
+    // Step 1: Create temp directory for the download
+    let temp_dir = std::env::temp_dir().join("godspeed_app_update");
+    if temp_dir.exists() {
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+    fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+    
+    let msi_path = temp_dir.join("godspeed-update.msi");
+    
+    // Step 2: Download the MSI file
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("User-Agent", "godspeed-app")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download update: {}", e))?;
+    
+    if !response.status().is_success() {
+        return Err(format!(
+            "Download failed: {} - {}",
+            response.status(),
+            response.status().canonical_reason().unwrap_or("Unknown error")
+        ));
+    }
+    
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read download: {}", e))?;
+    
+    let mut file = File::create(&msi_path)
+        .map_err(|e| format!("Failed to create MSI file: {}", e))?;
+    
+    file.write_all(&bytes)
+        .map_err(|e| format!("Failed to write MSI file: {}", e))?;
+    
+    drop(file); // Ensure file handle is released
+    
+    // Step 3: Launch the MSI installer with passive mode
+    // /passive = unattended mode with progress bar, no user interaction
+    Command::new("msiexec")
+        .args(["/i", &msi_path.to_string_lossy(), "/passive"])
+        .spawn()
+        .map_err(|e| format!("Failed to launch installer: {}", e))?;
+    
+    // Step 4: Exit the current application to allow installer to proceed
+    // Small delay to ensure the installer has started
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    app.exit(0);
+    
+    Ok("Installing update...".to_string())
+}
+
+// ============================================================================
+// ENGINE MANAGEMENT
+// ============================================================================
 
 /// Engine binary filenames (Windows)
 const ENGINE_BINARIES: &[&str] = &[
@@ -16,50 +161,39 @@ const ENGINE_BINARIES: &[&str] = &[
     "ffmpeg-x86_64-pc-windows-msvc.exe",
 ];
 
-/// Resolve the binaries directory with robust dev/prod mode detection.
+/// Resolve the binaries directory with fail-safe dev/prod mode detection.
 /// 
 /// Strategy:
-/// 1. Dev Mode: Look for `src-tauri/` folder containing existing binaries
-/// 2. Prod Mode: Use Tauri's resource_dir or locate folder with current yt-dlp.exe
-fn resolve_binaries_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    // Strategy 1: Try Tauri's resource directory (production mode)
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        // In production, binaries are typically in the resource directory
-        let prod_bin_path = resource_dir.clone();
-        if prod_bin_path.join("yt-dlp-x86_64-pc-windows-msvc.exe").exists() {
-            return Ok(prod_bin_path);
-        }
-        
-        // Also check for a 'binaries' subfolder
-        let binaries_subfolder = resource_dir.join("binaries");
-        if binaries_subfolder.join("yt-dlp-x86_64-pc-windows-msvc.exe").exists() {
-            return Ok(binaries_subfolder);
-        }
-    }
+/// 1. Production Mode: Return the executable directory unconditionally (no file checks)
+/// 2. Dev Mode: If running from target/debug, look for src-tauri folder
+/// 
+/// This is fail-safe: even if binaries are missing, it returns a valid path
+/// so install_engine_update can download files to the correct location.
+fn resolve_binaries_dir() -> Result<PathBuf, String> {
+    // Get the current executable path
+    let current_exe = std::env::current_exe()
+        .map_err(|e| format!("Failed to get current executable path: {}", e))?;
     
-    // Strategy 2: Dev Mode - Look for src-tauri folder relative to current exe
-    if let Ok(current_exe) = std::env::current_exe() {
-        // Walk up the directory tree looking for src-tauri
-        let mut search_path = current_exe.parent().map(|p| p.to_path_buf());
+    let exe_dir = current_exe.parent()
+        .ok_or_else(|| "Failed to get executable directory".to_string())?
+        .to_path_buf();
+    
+    // Check if we're running in dev mode (path contains target/debug or target/release)
+    let exe_path_str = exe_dir.to_string_lossy();
+    let is_dev_mode = exe_path_str.contains("target\\debug") || exe_path_str.contains("target/debug")
+        || exe_path_str.contains("target\\release") || exe_path_str.contains("target/release");
+    
+    if is_dev_mode {
+        // Dev Mode: Look for src-tauri folder relative to project root
+        // Walk up from target/debug to find the project root
+        let mut search_path = Some(exe_dir.clone());
         
-        // Search up to 5 levels (should be enough for typical Tauri dev setup)
         for _ in 0..5 {
             if let Some(ref path) = search_path {
                 // Check for src-tauri folder at this level
                 let src_tauri = path.join("src-tauri");
-                if src_tauri.join("yt-dlp-x86_64-pc-windows-msvc.exe").exists() {
+                if src_tauri.exists() {
                     return Ok(src_tauri);
-                }
-                
-                // Check for binaries subfolder in src-tauri
-                let binaries_folder = src_tauri.join("binaries");
-                if binaries_folder.join("yt-dlp-x86_64-pc-windows-msvc.exe").exists() {
-                    return Ok(binaries_folder);
-                }
-                
-                // Check if current path itself has the binaries (dev mode sidecars)
-                if path.join("yt-dlp-x86_64-pc-windows-msvc.exe").exists() {
-                    return Ok(path.clone());
                 }
                 
                 // Move up one directory
@@ -68,23 +202,20 @@ fn resolve_binaries_dir(app: &AppHandle) -> Result<PathBuf, String> {
                 break;
             }
         }
-    }
-    
-    // Strategy 3: Fallback - Check workspace root (for development)
-    // This handles the case where we're running from the target/ directory
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let manifest_path = PathBuf::from(&manifest_dir);
-        if manifest_path.join("yt-dlp-x86_64-pc-windows-msvc.exe").exists() {
-            return Ok(manifest_path);
+        
+        // Fallback: Use CARGO_MANIFEST_DIR for dev builds
+        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+            return Ok(PathBuf::from(&manifest_dir));
         }
         
-        let binaries_folder = manifest_path.join("binaries");
-        if binaries_folder.exists() {
-            return Ok(binaries_folder);
-        }
+        // Last resort: just use exe_dir
+        Ok(exe_dir)
+    } else {
+        // Production Mode: Return the executable directory unconditionally
+        // Tauri MSI places sidecars in the same directory as the main executable
+        // DO NOT check if files exist - this allows self-healing to work
+        Ok(exe_dir)
     }
-    
-    Err("Could not locate the engine binaries directory. Please reinstall the application.".to_string())
 }
 
 /// Check if a binary file is currently locked/in use.
@@ -113,14 +244,14 @@ fn is_file_locked(path: &PathBuf) -> bool {
 /// This command is self-healing: if binaries are missing or corrupted,
 /// it will download fresh copies from the specified URL.
 #[tauri::command]
-fn install_engine_update(app: AppHandle, url: String) -> Result<String, String> {
+fn install_engine_update(url: String) -> Result<String, String> {
     // Step 0: Validate URL
     if url.is_empty() {
         return Err("No update URL provided.".to_string());
     }
     
     // Step 1: Resolve the target directory
-    let binaries_dir = resolve_binaries_dir(&app)?;
+    let binaries_dir = resolve_binaries_dir()?;
     
     // Verify the directory exists (or create it)
     if !binaries_dir.exists() {
@@ -459,7 +590,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![download_video, show_in_folder, install_engine_update])
+        .invoke_handler(tauri::generate_handler![
+            download_video,
+            show_in_folder,
+            install_engine_update,
+            check_app_update,
+            install_app_update
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

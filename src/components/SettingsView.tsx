@@ -1,30 +1,80 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+
 import {
     Terminal,
     Trash2,
     Settings,
-    Download,
-    RefreshCw,
     CheckCircle,
     AlertTriangle,
     Loader2,
     Wrench,
+    Download,
+    Sparkles,
+    RefreshCw,
+    Shield,
 } from "lucide-react";
 
-// Placeholder URL for engine update - replace with actual GitHub release URL
-const ENGINE_UPDATE_URL = "https://github.com/YOUR_REPO/releases/download/v2.1.0/engine.zip";
+// App version - must match the version in tauri.conf.json
+const APP_VERSION = "2.1.1";
 
-// App version
-const APP_VERSION = "2.1.0";
+// Placeholder URL for engine update - replace with actual GitHub release asset URL
+const ENGINE_UPDATE_URL = "https://github.com/ThanathonTH/godspeed-downloader/releases/download/v2.1.0/engine_v12.zip";
 
+// Types
 type UpdateStatus = "idle" | "loading" | "success" | "error";
+type AppUpdateStatus = "idle" | "checking" | "up-to-date" | "update-available" | "error";
+type InstallStatus = "idle" | "downloading" | "installing" | "error";
+
+interface UpdateInfo {
+    update_available: boolean;
+    latest_version: string;
+    download_url: string;
+}
 
 interface SettingsViewProps {
     isTerminalEnabled: boolean;
     onToggleTerminalEnabled: (value: boolean) => void;
     autoClearUrl: boolean;
     onToggleAutoClear: (value: boolean) => void;
+}
+
+/**
+ * Format error messages to be user-friendly
+ */
+function formatErrorMessage(error: string): string {
+    const errorLower = error.toLowerCase();
+
+    // Network/connection errors
+    if (errorLower.includes("404") || errorLower.includes("not found")) {
+        return "Update file not found. Please check if a new release is available.";
+    }
+    if (errorLower.includes("network") || errorLower.includes("connection") || errorLower.includes("failed to download")) {
+        return "Unable to connect to update server. Please check your internet connection.";
+    }
+    if (errorLower.includes("timeout")) {
+        return "Connection timed out. Please try again.";
+    }
+
+    // Permission errors
+    if (errorLower.includes("permission") || errorLower.includes("access denied")) {
+        return "Permission denied. Try running the app as administrator.";
+    }
+    if (errorLower.includes("in use") || errorLower.includes("locked") || errorLower.includes("busy")) {
+        return "Files are in use. Please stop any active downloads and try again.";
+    }
+
+    // ZIP/extraction errors
+    if (errorLower.includes("zip") || errorLower.includes("extract") || errorLower.includes("invalid")) {
+        return "Downloaded file is corrupted. Please try again.";
+    }
+
+    // Keep short errors as-is, truncate long ones
+    if (error.length > 100) {
+        return error.substring(0, 97) + "...";
+    }
+
+    return error;
 }
 
 /**
@@ -37,9 +87,74 @@ function SettingsView({
     autoClearUrl,
     onToggleAutoClear,
 }: SettingsViewProps) {
+    // App update state
+    const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus>("idle");
+    const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+    const [updateError, setUpdateError] = useState("");
+    const [installStatus, setInstallStatus] = useState<InstallStatus>("idle");
+    const [installError, setInstallError] = useState("");
+
     // Engine update state
     const [engineUpdateStatus, setEngineUpdateStatus] = useState<UpdateStatus>("idle");
     const [engineUpdateMessage, setEngineUpdateMessage] = useState("");
+
+    /**
+     * Check for app updates on mount
+     */
+    useEffect(() => {
+        checkForUpdates();
+    }, []);
+
+    /**
+     * Check for app updates via GitHub Releases API
+     */
+    const checkForUpdates = async () => {
+        setAppUpdateStatus("checking");
+        setUpdateError("");
+        setUpdateInfo(null);
+
+        try {
+            const result = await invoke<UpdateInfo>("check_app_update", {
+                currentVersion: APP_VERSION,
+            });
+
+            setUpdateInfo(result);
+
+            if (result.update_available) {
+                setAppUpdateStatus("update-available");
+            } else {
+                setAppUpdateStatus("up-to-date");
+            }
+        } catch (error) {
+            setAppUpdateStatus("error");
+            setUpdateError(formatErrorMessage(String(error)));
+        }
+    };
+
+    /**
+     * Download and install app update
+     */
+    const handleInstallUpdate = async () => {
+        if (!updateInfo?.download_url) {
+            setInstallError("No download URL available.");
+            setInstallStatus("error");
+            return;
+        }
+
+        setInstallStatus("downloading");
+        setInstallError("");
+
+        try {
+            await invoke("install_app_update", {
+                url: updateInfo.download_url,
+            });
+            // If we get here, the app should be closing
+            setInstallStatus("installing");
+        } catch (error) {
+            setInstallStatus("error");
+            setInstallError(formatErrorMessage(String(error)));
+        }
+    };
 
     /**
      * Handle engine update/repair
@@ -62,16 +177,8 @@ function SettingsView({
             }, 5000);
         } catch (error) {
             setEngineUpdateStatus("error");
-            setEngineUpdateMessage(String(error));
+            setEngineUpdateMessage(formatErrorMessage(String(error)));
         }
-    };
-
-    /**
-     * Mock app update check (placeholder for tauri-plugin-updater)
-     */
-    const handleCheckAppUpdate = async () => {
-        // TODO: Integrate with tauri-plugin-updater
-        console.log("Checking for app updates...");
     };
 
     return (
@@ -91,6 +198,27 @@ function SettingsView({
 
             {/* Settings Panel */}
             <div className="glass-panel p-6 max-w-2xl space-y-6">
+                {/* App Update Section - Premium Design */}
+                <div className="space-y-4">
+                    <h2 className="text-xs font-medium text-white/50 tracking-wider uppercase mb-4 flex items-center gap-2">
+                        <Shield className="w-4 h-4" />
+                        App Updates
+                    </h2>
+
+                    <AppUpdateCard
+                        status={appUpdateStatus}
+                        updateInfo={updateInfo}
+                        updateError={updateError}
+                        installStatus={installStatus}
+                        installError={installError}
+                        onRetryCheck={checkForUpdates}
+                        onInstall={handleInstallUpdate}
+                    />
+                </div>
+
+                {/* Divider */}
+                <div className="border-t border-white/10 my-6" />
+
                 {/* Interface Section */}
                 <div className="space-y-1">
                     <h2 className="text-xs font-medium text-white/50 tracking-wider uppercase mb-4">
@@ -123,31 +251,11 @@ function SettingsView({
                 {/* Divider */}
                 <div className="border-t border-white/10 my-6" />
 
-                {/* Updates & Maintenance Section */}
+                {/* Engine Maintenance Section */}
                 <div className="space-y-4">
                     <h2 className="text-xs font-medium text-white/50 tracking-wider uppercase mb-4">
-                        Updates & Maintenance
+                        Engine Maintenance
                     </h2>
-
-                    {/* Version Badge */}
-                    <div className="flex items-center gap-3 py-3 px-4 -mx-4 rounded-lg bg-white/2">
-                        <div className="flex items-center gap-2 text-white/60">
-                            <div className="w-2 h-2 rounded-full bg-[#00ff88] animate-pulse" />
-                            <span className="text-sm font-medium">Current Version:</span>
-                        </div>
-                        <span className="text-[#00ff88] font-mono font-bold tracking-wide">
-                            v{APP_VERSION}
-                        </span>
-                    </div>
-
-                    {/* App Update Button */}
-                    <ActionButton
-                        icon={<Download className="w-5 h-5" />}
-                        title="Check for App Updates"
-                        description="Download and install the latest version of Godspeed"
-                        onClick={handleCheckAppUpdate}
-                        status="idle"
-                    />
 
                     {/* Engine Repair Button */}
                     <ActionButton
@@ -170,6 +278,185 @@ function SettingsView({
         </div>
     );
 }
+
+// ============================================================================
+// APP UPDATE CARD - World-Class UI Component
+// ============================================================================
+
+interface AppUpdateCardProps {
+    status: AppUpdateStatus;
+    updateInfo: UpdateInfo | null;
+    updateError: string;
+    installStatus: InstallStatus;
+    installError: string;
+    onRetryCheck: () => void;
+    onInstall: () => void;
+}
+
+function AppUpdateCard({
+    status,
+    updateInfo,
+    updateError,
+    installStatus,
+    installError,
+    onRetryCheck,
+    onInstall,
+}: AppUpdateCardProps) {
+    // Determine current display state
+    const isChecking = status === "checking";
+    const isUpToDate = status === "up-to-date";
+    const hasUpdate = status === "update-available";
+    const hasCheckError = status === "error";
+    const isDownloading = installStatus === "downloading";
+    const isInstalling = installStatus === "installing";
+    const hasInstallError = installStatus === "error";
+
+    // Card styling based on state
+    const getCardStyle = () => {
+        if (hasUpdate) return "bg-linear-to-r from-[#00ff88]/10 to-[#00ff88]/5 border-[#00ff88]/30";
+        if (isUpToDate) return "bg-white/2 border-white/10";
+        if (hasCheckError || hasInstallError) return "bg-amber-500/10 border-amber-500/30";
+        return "bg-white/2 border-white/10";
+    };
+
+    return (
+        <div className={`relative overflow-hidden rounded-xl border p-5 transition-all duration-500 ${getCardStyle()}`}>
+            {/* Background glow effect for update available */}
+            {hasUpdate && (
+                <div className="absolute inset-0 bg-linear-to-r from-[#00ff88]/5 to-transparent animate-pulse" />
+            )}
+
+            <div className="relative flex items-center justify-between gap-4">
+                {/* Left: Status Icon + Info */}
+                <div className="flex items-start gap-4 flex-1 min-w-0">
+                    {/* Status Icon */}
+                    <div className={`mt-0.5 shrink-0 ${isChecking || isDownloading || isInstalling ? "text-white/60" :
+                        isUpToDate ? "text-[#00ff88]" :
+                            hasUpdate ? "text-[#00ff88]" :
+                                "text-amber-400"
+                        }`}>
+                        {isChecking && <Loader2 className="w-6 h-6 animate-spin" />}
+                        {isDownloading && <Download className="w-6 h-6 animate-bounce" />}
+                        {isInstalling && <Loader2 className="w-6 h-6 animate-spin" />}
+                        {isUpToDate && <CheckCircle className="w-6 h-6" />}
+                        {hasUpdate && <Sparkles className="w-6 h-6 animate-pulse" />}
+                        {(hasCheckError || hasInstallError) && <AlertTriangle className="w-6 h-6" />}
+                        {status === "idle" && !isDownloading && !isInstalling && !hasInstallError && (
+                            <RefreshCw className="w-6 h-6" />
+                        )}
+                    </div>
+
+                    {/* Text Content */}
+                    <div className="min-w-0 flex-1">
+                        {/* Title */}
+                        <h3 className="text-white font-semibold text-lg">
+                            {isChecking && "Checking for Updates..."}
+                            {isDownloading && "Downloading Update..."}
+                            {isInstalling && "Installing Update..."}
+                            {isUpToDate && "You're Up to Date!"}
+                            {hasUpdate && `Version ${updateInfo?.latest_version} Available!`}
+                            {hasCheckError && "Update Check Failed"}
+                            {hasInstallError && "Installation Failed"}
+                            {status === "idle" && !isDownloading && !isInstalling && !hasInstallError && "Check for Updates"}
+                        </h3>
+
+                        {/* Description */}
+                        <p className={`text-sm mt-1 ${hasCheckError || hasInstallError ? "text-amber-400/80" : "text-white/50"
+                            }`}>
+                            {isChecking && "Connecting to GitHub..."}
+                            {isDownloading && "Please wait while the installer downloads..."}
+                            {isInstalling && "The installer will start shortly. This app will close."}
+                            {isUpToDate && (
+                                <>Running version <span className="font-mono text-[#00ff88]">v{APP_VERSION}</span> — the latest release</>
+                            )}
+                            {hasUpdate && (
+                                <>Current: <span className="font-mono">v{APP_VERSION}</span> → New: <span className="font-mono text-[#00ff88]">v{updateInfo?.latest_version}</span></>
+                            )}
+                            {hasCheckError && updateError}
+                            {hasInstallError && installError}
+                            {status === "idle" && !isDownloading && !isInstalling && !hasInstallError && (
+                                "Click to check for new versions"
+                            )}
+                        </p>
+                    </div>
+                </div>
+
+                {/* Right: Action Button */}
+                <div className="shrink-0">
+                    {/* Checking - No button */}
+                    {isChecking && (
+                        <div className="w-28" /> // Spacer
+                    )}
+
+                    {/* Up to Date - Disabled badge */}
+                    {isUpToDate && (
+                        <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#00ff88]/10 text-[#00ff88] text-sm font-medium">
+                            <CheckCircle className="w-4 h-4" />
+                            Latest
+                        </div>
+                    )}
+
+                    {/* Update Available - Install Button */}
+                    {hasUpdate && !isDownloading && !isInstalling && !hasInstallError && (
+                        <button
+                            onClick={onInstall}
+                            disabled={!updateInfo?.download_url}
+                            className="group flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-sm transition-all duration-300 bg-[#00ff88] text-black hover:bg-[#00ff88]/90 hover:shadow-[0_0_20px_rgba(0,255,136,0.4)] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            <Download className="w-4 h-4 group-hover:animate-bounce" />
+                            Update Now
+                        </button>
+                    )}
+
+                    {/* Downloading/Installing - Progress indicator */}
+                    {(isDownloading || isInstalling) && (
+                        <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white/5 text-white/60 text-sm font-medium">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            {isDownloading ? "Downloading..." : "Installing..."}
+                        </div>
+                    )}
+
+                    {/* Check Error - Retry button */}
+                    {hasCheckError && (
+                        <button
+                            onClick={onRetryCheck}
+                            className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
+                        >
+                            <RefreshCw className="w-4 h-4" />
+                            Retry
+                        </button>
+                    )}
+
+                    {/* Install Error - Retry button */}
+                    {hasInstallError && (
+                        <button
+                            onClick={onInstall}
+                            className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
+                        >
+                            <RefreshCw className="w-4 h-4" />
+                            Retry
+                        </button>
+                    )}
+
+                    {/* Idle - Check button */}
+                    {status === "idle" && !isDownloading && !isInstalling && !hasInstallError && (
+                        <button
+                            onClick={onRetryCheck}
+                            className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
+                        >
+                            <RefreshCw className="w-4 h-4" />
+                            Check
+                        </button>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ============================================================================
+// SHARED COMPONENTS
+// ============================================================================
 
 interface ToggleItemProps {
     icon: React.ReactNode;
@@ -238,7 +525,7 @@ function ActionButton({
             <div className="flex items-center justify-between">
                 {/* Left: Icon + Text */}
                 <div className="flex items-start gap-4 flex-1 min-w-0">
-                    <div className={`mt-0.5 ${isSuccess ? "text-[#00ff88]" : isError ? "text-red-400" : "text-white/40"} transition-colors`}>
+                    <div className={`mt-0.5 ${isSuccess ? "text-[#00ff88]" : isError ? "text-amber-400" : "text-white/40"} transition-colors`}>
                         {isLoading ? (
                             <Loader2 className="w-5 h-5 animate-spin" />
                         ) : isSuccess ? (
@@ -251,9 +538,9 @@ function ActionButton({
                     </div>
                     <div className="min-w-0 flex-1">
                         <h3 className="text-white font-medium">{title}</h3>
-                        <p className="text-white/40 text-sm mt-0.5">
+                        <p className={`text-sm mt-0.5 ${isError ? "text-amber-400/80" : "text-white/40"}`}>
                             {isLoading
-                                ? "Downloading Engine..."
+                                ? "Downloading engine files..."
                                 : isSuccess
                                     ? statusMessage || "Update complete!"
                                     : isError
@@ -272,7 +559,7 @@ function ActionButton({
                         : isSuccess
                             ? "bg-[#00ff88]/20 text-[#00ff88] hover:bg-[#00ff88]/30"
                             : isError
-                                ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                                ? "bg-amber-500/20 text-amber-400 hover:bg-amber-500/30"
                                 : "bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
                         }`}
                 >
@@ -284,30 +571,21 @@ function ActionButton({
                     ) : isSuccess ? (
                         <>
                             <CheckCircle className="w-4 h-4" />
-                            Updated
+                            Done
                         </>
                     ) : isError ? (
                         <>
-                            <RefreshCw className="w-4 h-4" />
+                            <Wrench className="w-4 h-4" />
                             Retry
                         </>
                     ) : (
                         <>
-                            <RefreshCw className="w-4 h-4" />
-                            Update
+                            <Wrench className="w-4 h-4" />
+                            Repair
                         </>
                     )}
                 </button>
             </div>
-
-            {/* Error Details */}
-            {isError && statusMessage && (
-                <div className="mt-3 ml-9 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
-                    <p className="text-red-400 text-xs font-mono wrap-break-word">
-                        {statusMessage}
-                    </p>
-                </div>
-            )}
         </div>
     );
 }
