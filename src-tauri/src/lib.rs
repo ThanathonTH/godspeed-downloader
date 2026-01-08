@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use tauri::AppHandle;
 use tauri::Emitter;
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use zip::ZipArchive;
@@ -87,8 +88,9 @@ async fn check_app_update(current_version: String) -> Result<UpdateInfo, String>
 
 /// Download and install an app update from the given MSI URL.
 /// 
-/// Downloads the MSI installer to a temp directory, launches it with msiexec,
-/// and then exits the current application to allow the installer to complete.
+/// Downloads the MSI installer to a temp directory and opens it with the
+/// system's default handler, allowing Windows to show the installation UI.
+/// Does NOT force app exit - lets the user/installer handle that.
 #[tauri::command]
 async fn install_app_update(app: AppHandle, url: String) -> Result<String, String> {
     if url.is_empty() {
@@ -96,14 +98,13 @@ async fn install_app_update(app: AppHandle, url: String) -> Result<String, Strin
     }
     
     // Step 1: Create temp directory for the download
-    let temp_dir = std::env::temp_dir().join("godspeed_app_update");
-    if temp_dir.exists() {
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-    fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+    let temp_dir = std::env::temp_dir();
+    let msi_path = temp_dir.join("Godspeed_Update_2.1.1.msi");
     
-    let msi_path = temp_dir.join("godspeed-update.msi");
+    // Clean up any previous download
+    if msi_path.exists() {
+        let _ = fs::remove_file(&msi_path);
+    }
     
     // Step 2: Download the MSI file
     let client = reqwest::Client::new();
@@ -135,19 +136,16 @@ async fn install_app_update(app: AppHandle, url: String) -> Result<String, Strin
     
     drop(file); // Ensure file handle is released
     
-    // Step 3: Launch the MSI installer with passive mode
-    // /passive = unattended mode with progress bar, no user interaction
-    Command::new("msiexec")
-        .args(["/i", &msi_path.to_string_lossy(), "/passive"])
-        .spawn()
-        .map_err(|e| format!("Failed to launch installer: {}", e))?;
+    // Step 3: Open the MSI file with the system's default handler
+    // This will show the Windows Installer UI to the user
+    app.opener()
+        .open_path(msi_path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| format!("Failed to open installer: {}", e))?;
     
-    // Step 4: Exit the current application to allow installer to proceed
-    // Small delay to ensure the installer has started
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    app.exit(0);
+    // DO NOT force app.exit() here - let the user/installer handle closure
+    // The installer will prompt the user to close the app if needed
     
-    Ok("Installing update...".to_string())
+    Ok(format!("Installer launched! Please follow the installation prompts. File: {}", msi_path.display()))
 }
 
 // ============================================================================
